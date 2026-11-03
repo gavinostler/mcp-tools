@@ -22,6 +22,6 @@ SOFTWARE.
 
 ---
 
-rojo-autoconnect/autoconnect.patch modifies source code from Rojo
+src/mcp_tools/autoconnect.patch modifies source code from Rojo
 (https://github.com/rojo-rbx/rojo) and is licensed under the Mozilla Public
 License 2.0, as Rojo is.

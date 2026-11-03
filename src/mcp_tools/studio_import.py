@@ -1,13 +1,12 @@
 """Import an FBX/OBJ/GLB/GLTF through Roblox Studio's own 3D Importer, as a person would.
 
-Usage: python import.py <file>   (Windows; Roblox Studio open with one place, in Edit mode)
+import_model(path) (the mcp-tools `studio_import` tool), or: python -m mcp_tools.studio_import <file>
+Windows only; Roblox Studio open with one place, in Edit mode (not playtesting: the caller checks).
 
 Drives: File > Import -> Windows "Open 3D File" dialog -> "Import Preview" window -> Import.
-The importer's settings are left exactly as the owner set them.
-Caller must make sure Studio is in Edit mode (not playtesting) first.
-Exit 0 means the importer accepted the file. Studio's Import Queue then finishes it a few seconds
-later, so confirm the model arrived (e.g. Studio MCP: workspace:WaitForChild(name, 30)).
-Setup: python -m pip install pywinauto
+The importer's settings are left exactly as they are. Returning means the importer accepted the
+file; Studio's Import Queue finishes it a few seconds later, so confirm the model arrived (e.g.
+with the Roblox Studio MCP: workspace:WaitForChild(name, 30)).
 """
 import ctypes
 import os
@@ -30,9 +29,15 @@ PREVIEW_TITLE = "Import Preview"
 IMPORT_BTN_FROM_BR = (85, 40)
 
 
+STRAY = {"RBX::Studio::detail::Menu", "SysShadow"}  # a menu left open by the last import
+
+
+class ImportFailed(Exception):
+    pass
+
+
 def fail(msg):
-    print("import failed:", msg, file=sys.stderr)
-    sys.exit(1)
+    raise ImportFailed(msg)
 
 
 def uia(h):
@@ -77,10 +82,9 @@ def blue(c):
     return b > 200 and b - r > 90 and b - g > 50
 
 
-def main():
-    if len(sys.argv) != 2:
-        fail("usage: import.py <path-to.fbx>")
-    path = os.path.abspath(sys.argv[1])
+def import_model(path: str) -> str:
+    """Import `path` through Studio's 3D Importer; returns a summary, raises ImportFailed."""
+    path = os.path.abspath(path)
     if not os.path.isfile(path):
         fail(f"no such file: {path}")
     t0 = time.time()
@@ -92,6 +96,12 @@ def main():
     studio = uia(main_h)
     pid = studio.process_id()
     extra = titles(pid, {main_h})
+    if extra and set(extra) <= STRAY:  # close it and carry on
+        from pywinauto.keyboard import send_keys
+
+        send_keys("{ESC}")
+        time.sleep(0.5)
+        extra = titles(pid, {main_h})
     if extra:
         fail(f"Studio already has another window open (close it first): {extra}")
 
@@ -139,8 +149,12 @@ def main():
         return True
 
     wait_for("the import to finish (Import Preview to close)", 180, closed)
-    print(f"imported {path} in {time.time() - t0:.1f}s (import itself {time.time() - t_click:.1f}s)")
+    return f"imported {path} in {time.time() - t0:.1f}s (import itself {time.time() - t_click:.1f}s)"
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        print(import_model(sys.argv[1]))
+    except (ImportFailed, IndexError) as e:
+        print("import failed:", e or "usage: python -m mcp_tools.studio_import <file>", file=sys.stderr)
+        sys.exit(1)

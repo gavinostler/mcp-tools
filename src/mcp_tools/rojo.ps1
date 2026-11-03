@@ -1,25 +1,28 @@
 <#
-  Rojo server and plugin helper. Run it from the Rojo project's folder (or pass -Project).
-    rojo.ps1 start [-Port 34872]   serve the project in a process that outlives the calling shell
-    rojo.ps1 status [-Port 34872]  is a server for this project answering?
+  Rojo server and plugin helper (the mcp-tools server calls it; it works on its own too).
+    rojo.ps1 start  -Project <default.project.json> [-Port 34872]  serve it in a process that outlives the caller
+    rojo.ps1 status -Project <default.project.json> [-Port 34872]  is a server for this project answering?
     rojo.ps1 stop [-Port 34872]    stop the server this script started (never one it did not start)
-    rojo.ps1 build                 build the auto-connect Rojo plugin into out/Rojo.rbxm, next to this script
+    rojo.ps1 build                 build the auto-connect Rojo plugin into <StateDir>\out\Rojo.rbxm
+  Pid files, logs and the plugin build go in -StateDir (default: next to this script).
 #>
 param(
     [Parameter(Mandatory = $true)][ValidateSet('start', 'status', 'stop', 'build')][string]$Command,
     [int]$Port = 34872,
-    [string]$Project = 'default.project.json'
+    [string]$Project = 'default.project.json',
+    [string]$StateDir = $PSScriptRoot
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
+New-Item -ItemType Directory -Force $StateDir | Out-Null
 $rojo = if (Test-Path "$env:USERPROFILE\.aftman\bin\rojo.exe") { "$env:USERPROFILE\.aftman\bin\rojo.exe" } else { 'rojo' }
-if ($Command -ne 'build') {
+if ($Command -in 'start', 'status') {
     $projectFile = (Resolve-Path $Project).Path
     $repo = Split-Path $projectFile
     $project = (Get-Content $projectFile -Raw | ConvertFrom-Json).name
 }
-$pidFile = "$here\serve-$Port.pid"
-$logFile = "$here\serve-$Port.log"
+$pidFile = "$StateDir\serve-$Port.pid"
+$logFile = "$StateDir\serve-$Port.log"
 
 function Test-Server {
     # /api/rojo answers in msgpack; the project name sits in it as plain bytes
@@ -74,16 +77,16 @@ switch ($Command) {
     'build' {
         # Plugin is built from the tag matching the installed CLI, so plugin and server versions always match.
         $ver = ((& $rojo --version) -split ' ')[-1]
-        $src = "$here\build\rojo-$ver"
+        $src = "$StateDir\build\rojo-$ver"
         if (-not (Test-Path $src)) {
             git clone -q --depth 1 --branch "v$ver" --recurse-submodules --shallow-submodules https://github.com/rojo-rbx/rojo.git $src
             if ($LASTEXITCODE) { throw 'clone failed' }
             git -C $src apply "$here\autoconnect.patch"
             if ($LASTEXITCODE) { throw "autoconnect.patch does not apply to Rojo $ver; port it by hand" }
         }
-        New-Item -ItemType Directory -Force "$here\out" | Out-Null
-        & $rojo build "$src\plugin.project.json" -o "$here\out\Rojo.rbxm"
+        New-Item -ItemType Directory -Force "$StateDir\out" | Out-Null
+        & $rojo build "$src\plugin.project.json" -o "$StateDir\out\Rojo.rbxm"
         if ($LASTEXITCODE) { throw 'rojo build failed' }
-        "built $here\out\Rojo.rbxm (Rojo $ver + autoconnect.patch)"
+        "built $StateDir\out\Rojo.rbxm (Rojo $ver + autoconnect.patch)"
     }
 }
