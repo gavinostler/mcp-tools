@@ -15,12 +15,11 @@ screenshot of Studio. Windows only.
 | `rojo_build_plugin()` | Builds a Rojo plugin that connects by itself in Edit mode (below), from the installed Rojo's own version. |
 | `rojo_install_plugin(configure_settings=True)` | Installs that plugin (backing up the old one) and, with Studio closed, turns on Rojo's Auto Reconnect and "Unlisted PlaceId" confirmation. |
 | `studio_windows()` | The open Studio windows (one per open place), with each one's pid and log file. |
-| `studio_import(path, window="")` | Imports a mesh (FBX / OBJ / GLB / GLTF), image, sound or video through Studio's importer, as a person would. |
+| `studio_import(paths, window="", allow_input=True)` | Imports meshes (FBX / OBJ / GLB / GLTF), images, sounds and video through Studio's importer, as a person would: files and/or whole folders, one after another. |
 | `studio_logs(lines=50, pattern="", since_minutes=0, window="")` | The end of a Studio window's log (Output window and Studio's own messages), filtered by a regex and/or age. |
 | `studio_screenshot(window="")` | A screenshot of a Studio window, returned as an image, even if it's behind other windows. |
 
-Each Studio tool works on one Studio window. With several open (Studio gives each place its own
-window and process), pass `window`: a place name, part of the window title, or a pid from
+Each Studio tool works on one Studio window. With several open (one per place), pass `window`: a place name, part of the window title, or a pid from
 `studio_windows`. With just one open it can be left out.
 
 ## Install
@@ -76,13 +75,25 @@ Once: `rojo_build_plugin`, close Studio, `rojo_install_plugin`, then add your pl
 
 `studio_import` drives Studio's UI with Windows UI Automation: File > Import, the file dialog, then
 Import in the Import Preview, leaving your importer settings as they are (so "Upload to Roblox"
-etc. behave as when you import by hand). It takes the mouse and keyboard for about 15 seconds.
-It takes everything in the dialog's "All Supported Files": meshes (`.fbx .obj .gltf .glb`), images
+etc. behave as when you import by hand). It takes everything in the dialog's "All Supported Files": meshes (`.fbx .obj .gltf .glb`), images
 (`.bmp .gif .jpeg .jpg .png .tga`), audio (`.ogg .mp3 .flac .wav`) and video (`.mp4 .mov`). A mesh
 always gets the Import Preview; if another kind of file gets none within 15 seconds of the file
 dialog closing, the tool takes it that Studio sent it straight to its Import Queue and returns.
 Returning means the importer accepted the file; Studio's Import Queue finishes it a few seconds
 later, so check it arrived (with the Studio MCP) and look at `studio_logs` before using it.
+
+**Bulk import.** `paths` is a list of files and/or folders (a folder means every supported file
+directly inside it). Everything is checked before Studio is touched, then imported one at a time
+(about 15-20 seconds each, with a pause between), reporting progress to clients that ask for it.
+It stops at the first failure and says which files were imported and which weren't tried.
+
+**Your mouse and keyboard.** The menu and file dialog go through UI Automation, and Import is
+clicked by posting mouse messages to the Import Preview, so the real pointer doesn't move. If
+Studio ignores that click (nothing happens within 5 seconds), it clicks with the real mouse; with
+`allow_input=False` it cancels that import and fails instead. A menu left open by an earlier
+import is closed the same way, with a real Esc only as the fallback. The result says how Import was
+clicked. Studio's window (then the Import Preview) does still come to the front, since File >
+Import works on the active window.
 
 Limits, because Studio draws the inside of the Import Preview itself (invisible to UI Automation):
 
@@ -91,9 +102,14 @@ Limits, because Studio draws the inside of the Import Preview itself (invisible 
   clicking anything else: update `IMPORT_BTN_FROM_BR` in `studio_import.py`.
 - It can't read importer warnings: with the button enabled it imports anyway.
 - The Studio window must be in Edit mode (check before calling: it doesn't) and visible on screen.
-- Leave a few seconds between imports.
+- File > Import works on the place in Studio's active window, so the tool brings the chosen window
+  to the front first, and fails if Windows won't let it. If the file dialog or Import Preview still
+  turns out to belong to another place's window, it cancels it and fails rather than importing
+  into the wrong place.
+- Leave a few seconds between separate `studio_import` calls (a bulk import pauses by itself).
 
-It also works without the server: `python -m mcp_tools.studio_import <file> [window]`.
+It also works without the server:
+`python -m mcp_tools.studio_import <file or folder>... [--window W] [--no-input]`.
 
 ## Checking the result
 

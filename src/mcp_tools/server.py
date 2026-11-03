@@ -6,6 +6,7 @@ install a Rojo plugin that auto-connects in Edit mode. Studio: import a model th
 anywhere). Working files (pid files, logs, the plugin build) go in %LOCALAPPDATA%\\mcp-tools.
 """
 import datetime
+import functools
 import json
 import os
 import re
@@ -14,7 +15,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mcp.server.mcpserver import Image, MCPServer
+import anyio
+import anyio.from_thread
+import anyio.to_thread
+from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from . import logs
@@ -189,25 +193,40 @@ def studio_windows() -> str:
     out = []
     for w in found:
         log = log_for(w.pid, ROBLOX / "logs")
-        out.append(f"{w.place!r}: pid {w.pid}, log {log.name if log else '(not found)'}")
+        line = f"{w.place!r}: pid {w.pid}, log {log.name if log else '(not found)'}"
+        sharing = [repr(o.place) for o in found if o.pid == w.pid and o != w]
+        if sharing:  # then pass a place name, not the pid, as `window`
+            line += f" (shares its process and log with {', '.join(sharing)})"
+        out.append(line)
     return "\n".join(out)
 
 
 @mcp.tool()
-def studio_import(path: str, window: str = "") -> str:
-    """Import a file through Roblox Studio's own importer, as a person would (File > Import, then
+async def studio_import(paths: list[str], ctx: Context, window: str = "", allow_input: bool = True) -> str:
+    """Import files through Roblox Studio's own importer, as a person would (File > Import, then
     Import in the Import Preview if one comes up), leaving the importer's settings as they are:
-    meshes (FBX, OBJ, GLB, GLTF), images (BMP, GIF, JPEG, PNG, TGA), audio (OGG, MP3, FLAC, WAV) or
-    video (MP4, MOV). The Studio window must be in Edit mode (not playtesting) and visible on
-    screen; it takes the mouse and keyboard for about 15 s. Returning means the importer accepted
-    the file: Studio's Import Queue finishes it a few seconds later, so check it arrived before
-    using it, and check studio_logs for import errors. Leave a few seconds between imports.
+    meshes (FBX, OBJ, GLB, GLTF), images (BMP, GIF, JPEG, PNG, TGA), audio (OGG, MP3, FLAC, WAV) and
+    video (MP4, MOV). `paths`: files, and/or folders to import every such file directly inside.
+    They're imported one at a time (about 15-20 s each), stopping at the first failure; everything
+    is checked before Studio is touched. The Studio window must be in Edit mode (not playtesting)
+    and visible on screen, and is brought to the front. The mouse and keyboard are left alone
+    unless Studio ignores the background clicks; then it uses the real ones, or with
+    `allow_input` false cancels that import and fails instead. Returning means the importer
+    accepted the files: Studio's Import Queue finishes them a few seconds later, so check they
+    arrived before using them, and check studio_logs for import errors.
     `window`: which Studio window, if several are open: a place name, part of a title, or a pid
     (see studio_windows)."""
     _need_windows()
-    from .studio_import import import_model
+    from .studio_import import import_many
 
-    return _studio(import_model, path, window)
+    def on_file(i, n, f):
+        try:  # progress is a nicety: never let it stop an import
+            anyio.from_thread.run(ctx.report_progress, i, n, f"importing {os.path.basename(f)}")
+        except Exception:
+            pass
+
+    return await anyio.to_thread.run_sync(
+        functools.partial(_studio, import_many, paths, window, allow_input, on_file))
 
 
 def _studio_log(window: str) -> tuple[Path, str]:

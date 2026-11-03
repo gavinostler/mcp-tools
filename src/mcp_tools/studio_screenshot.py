@@ -13,7 +13,7 @@ from ctypes import wintypes
 
 from PIL import Image, ImageGrab
 
-from .studio import StudioError, StudioWindow, pick, uia  # (pywinauto makes this process DPI aware)
+from .studio import StudioError, StudioWindow, activate, pick  # (pywinauto makes this process DPI aware)
 
 MAX_EDGE = 1568  # bigger images are scaled down on the model's side anyway
 PW_RENDERFULLCONTENT = 2  # also capture what the GPU draws (the 3D viewport)
@@ -98,7 +98,7 @@ def capture(window: str = "") -> tuple[StudioWindow, bytes]:
     if img is not None:
         img = img.crop((frame[0] - rect[0], frame[1] - rect[1], frame[2] - rect[0], frame[3] - rect[1]))
     if img is None or img.getbbox() is None:  # failed, or all black
-        uia(h).set_focus()
+        activate(target)
         time.sleep(0.3)
         img = ImageGrab.grab(bbox=frame, all_screens=True)
     img.thumbnail((MAX_EDGE, MAX_EDGE))
