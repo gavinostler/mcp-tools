@@ -2,22 +2,31 @@
 
 An MCP server for working on a Roblox game from an AI assistant (Claude Code and other MCP
 clients), next to Roblox's own Studio MCP. It covers what that one can't: keeping Rojo running
-and connected without anyone clicking Connect, and importing models through Studio's own 3D
-Importer. Windows only.
+and connected without anyone clicking Connect, importing models through Studio's own 3D
+Importer, and letting the assistant check its work through Rojo's and Studio's logs and a
+screenshot of Studio. Windows only.
 
 | Tool | What it does |
 |---|---|
 | `rojo_start(project, port=34872)` | Serves a Rojo project in a process that keeps running after the assistant's session ends. Does nothing if it's already being served; refuses if another project is on the port. |
 | `rojo_status(project, port)` | Is a server for that project answering, and did `rojo_start` start it? |
 | `rojo_stop(port)` | Stops the server `rojo_start` started (never one it didn't start). |
+| `rojo_logs(port, lines=50)` | The end of that server's output: where Rojo reports files it can't sync. |
 | `rojo_build_plugin()` | Builds a Rojo plugin that connects by itself in Edit mode (below), from the installed Rojo's own version. |
 | `rojo_install_plugin(configure_settings=True)` | Installs that plugin (backing up the old one) and, with Studio closed, turns on Rojo's Auto Reconnect and "Unlisted PlaceId" confirmation. |
-| `studio_import(path)` | Imports an FBX / OBJ / GLB / GLTF through Studio's 3D Importer, as a person would. |
+| `studio_windows()` | The open Studio windows (one per open place), with each one's pid and log file. |
+| `studio_import(path, window="")` | Imports an FBX / OBJ / GLB / GLTF through Studio's 3D Importer, as a person would. |
+| `studio_logs(lines=50, pattern="", since_minutes=0, window="")` | The end of a Studio window's log (Output window and Studio's own messages), filtered by a regex and/or age. |
+| `studio_screenshot(window="")` | A screenshot of a Studio window, returned as an image, even if it's behind other windows. |
+
+Each Studio tool works on one Studio window. With several open (Studio gives each place its own
+window and process), pass `window`: a place name, part of the window title, or a pid from
+`studio_windows`. With just one open it can be left out.
 
 ## Install
 
 Needs Windows, [uv](https://docs.astral.sh/uv/), Roblox Studio, and for the Rojo tools `rojo`
-(e.g. through aftman) and `git`.
+(e.g. through aftman or rokit) and `git`.
 
 Claude Code:
 
@@ -77,10 +86,23 @@ Limits, because Studio draws the inside of the Import Preview itself (invisible 
   once that pixel is blue (enabled). If a Studio update moves it, the tool times out rather than
   clicking anything else: update `IMPORT_BTN_FROM_BR` in `studio_import.py`.
 - It can't read importer warnings: with the button enabled it imports anyway.
-- Exactly one Studio window, in Edit mode (check before calling: it doesn't), visible on screen.
+- The Studio window must be in Edit mode (check before calling: it doesn't) and visible on screen.
 - Leave a few seconds between imports.
 
-It also works without the server: `python -m mcp_tools.studio_import <file>`.
+It also works without the server: `python -m mcp_tools.studio_import <file> [window]`.
+
+## Checking the result
+
+- `rojo_logs` reads `serve-<port>.log`, which `rojo_start` writes (and starts over each time). When
+  edits stop reaching Studio, this is where Rojo says which file it couldn't read.
+- `studio_logs` reads the log of the chosen Studio window from `%LOCALAPPDATA%\Roblox\logs`:
+  the one that window's process has open, or else the one created when it started. With Studio
+  closed it reads the most recently written log instead. It's noisy, so pass a `pattern` (case-insensitive regex, e.g. `error|warn|fail`) and/or
+  `since_minutes`. Times are UTC. After `studio_import`, look here for what the Import Queue said.
+- `studio_screenshot` captures Studio with `PrintWindow`, so it works with Studio behind other
+  windows and leaves the focus alone. If that comes back blank, it brings Studio to the front and
+  copies it off the screen instead. The image is a JPEG at most 1568 px on its long side. It
+  also works without the server: `python -m mcp_tools.studio_screenshot [out.jpg] [window]`.
 
 ## Licence
 

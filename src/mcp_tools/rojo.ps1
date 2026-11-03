@@ -13,13 +13,25 @@ param(
     [string]$StateDir = $PSScriptRoot
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8  # the caller reads UTF-8 (paths can be non-ASCII)
+# Report a failure as its message alone, not PowerShell's multi-line error record.
+trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 $here = $PSScriptRoot
 New-Item -ItemType Directory -Force $StateDir | Out-Null
-$rojo = if (Test-Path "$env:USERPROFILE\.aftman\bin\rojo.exe") { "$env:USERPROFILE\.aftman\bin\rojo.exe" } else { 'rojo' }
+# aftman / rokit shims may not be on the PATH of a GUI-launched MCP client
+$rojo = @("$env:USERPROFILE\.aftman\bin\rojo.exe", "$env:USERPROFILE\.rokit\bin\rojo.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $rojo) { $rojo = 'rojo' }
 if ($Command -in 'start', 'status') {
     $projectFile = (Resolve-Path $Project).Path
     $repo = Split-Path $projectFile
     $project = (Get-Content $projectFile -Raw | ConvertFrom-Json).name
+    if (-not $project) {
+        # Rojo 7.4+ lets "name" be left out: default.project.json takes its folder's name, any other
+        # <x>.project.json takes x.
+        $leaf = Split-Path $projectFile -Leaf
+        $project = if ($leaf -eq 'default.project.json') { Split-Path $repo -Leaf } else { $leaf -replace '\.project\.json$', '' }
+    }
 }
 $pidFile = "$StateDir\serve-$Port.pid"
 $logFile = "$StateDir\serve-$Port.log"
@@ -28,7 +40,7 @@ function Test-Server {
     # /api/rojo answers in msgpack; the project name sits in it as plain bytes
     try {
         $wc = New-Object System.Net.WebClient
-        $body = [Text.Encoding]::ASCII.GetString($wc.DownloadData("http://localhost:$Port/api/rojo"))
+        $body = [Text.Encoding]::UTF8.GetString($wc.DownloadData("http://localhost:$Port/api/rojo"))
         if ($body.Contains($project)) { return 'ours' }
         return 'other'
     } catch { return $null }
@@ -37,7 +49,10 @@ function Test-Server {
 function Get-OurPid {
     if (-not (Test-Path $pidFile)) { return $null }
     $id = [int](Get-Content $pidFile)
-    if (Get-Process -Id $id -ErrorAction SilentlyContinue) { return $id }
+    # The pid file can outlive the server and Windows reuses pids: only trust the pid while it's
+    # still the `rojo serve` this script started on this port (the cmd.exe wrapping it).
+    $p = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -ErrorAction SilentlyContinue
+    if ($p -and $p.CommandLine -like "* serve *--port $Port *") { return $id }
     Remove-Item $pidFile
     return $null
 }
@@ -79,10 +94,15 @@ switch ($Command) {
         $ver = ((& $rojo --version) -split ' ')[-1]
         $src = "$StateDir\build\rojo-$ver"
         if (-not (Test-Path $src)) {
-            git clone -q --depth 1 --branch "v$ver" --recurse-submodules --shallow-submodules https://github.com/rojo-rbx/rojo.git $src
-            if ($LASTEXITCODE) { throw 'clone failed' }
-            git -C $src apply "$here\autoconnect.patch"
-            if ($LASTEXITCODE) { throw "autoconnect.patch does not apply to Rojo $ver; port it by hand" }
+            # Clone and patch next to $src and only then move it into place, so a failed clone or
+            # patch never leaves an unpatched copy behind to be built next time.
+            $tmp = "$src.tmp"
+            if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+            git clone -q --depth 1 --branch "v$ver" --recurse-submodules --shallow-submodules https://github.com/rojo-rbx/rojo.git $tmp
+            if ($LASTEXITCODE) { throw "cloning Rojo v$ver failed" }
+            git -C $tmp apply "$here\autoconnect.patch"
+            if ($LASTEXITCODE) { Remove-Item -Recurse -Force $tmp; throw "autoconnect.patch does not apply to Rojo $ver; port it by hand" }
+            Move-Item $tmp $src
         }
         New-Item -ItemType Directory -Force "$StateDir\out" | Out-Null
         & $rojo build "$src\plugin.project.json" -o "$StateDir\out\Rojo.rbxm"

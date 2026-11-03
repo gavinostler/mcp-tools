@@ -1,7 +1,9 @@
 """Import an FBX/OBJ/GLB/GLTF through Roblox Studio's own 3D Importer, as a person would.
 
-import_model(path) (the mcp-tools `studio_import` tool), or: python -m mcp_tools.studio_import <file>
-Windows only; Roblox Studio open with one place, in Edit mode (not playtesting: the caller checks).
+import_model(path, window="") (the mcp-tools `studio_import` tool), or:
+    python -m mcp_tools.studio_import <file> [window]
+Windows only. `window` picks the Studio window (see studio.pick; needed when several are open),
+which must be in Edit mode (not playtesting: the caller checks).
 
 Drives: File > Import -> Windows "Open 3D File" dialog -> "Import Preview" window -> Import.
 The importer's settings are left exactly as they are. Returning means the importer accepted the
@@ -14,10 +16,10 @@ import sys
 import time
 
 from pywinauto import findwindows
-from pywinauto.controls.uiawrapper import UIAWrapper
-from pywinauto.uia_element_info import UIAElementInfo
 
-STUDIO_TITLE = r".* - Roblox Studio$"
+from .studio import StudioError, find, pick, uia
+
+EXTENSIONS = {".fbx", ".obj", ".glb", ".gltf"}  # what the 3D Importer's file dialog accepts
 IMPORT_ACTION_ID = "RBXMainWindow.meshImporterAction"  # File > "Import"
 FILE_DLG_CLASS = "#32770"  # titled "Open 3D File (FBX, OBJ, GLB, GLTF)"
 FILE_EDIT_ID, FILE_OPEN_ID = "1148", "1"  # standard Win32 file dialog ids
@@ -28,20 +30,15 @@ PREVIEW_TITLE = "Import Preview"
 # ponytail: breaks if Roblox moves the button; re-measure.
 IMPORT_BTN_FROM_BR = (85, 40)
 
-
 STRAY = {"RBX::Studio::detail::Menu", "SysShadow"}  # a menu left open by the last import
 
 
-class ImportFailed(Exception):
+class ImportFailed(StudioError):
     pass
 
 
 def fail(msg):
     raise ImportFailed(msg)
-
-
-def uia(h):
-    return UIAWrapper(UIAElementInfo(h))
 
 
 def child(el, **want):
@@ -67,7 +64,8 @@ def windows(pid):
 
 
 def titles(pid, skip):
-    return [uia(h).element_info.name or uia(h).element_info.class_name for h in windows(pid) if h not in skip]
+    infos = [uia(h).element_info for h in windows(pid) if h not in skip]
+    return [ei.name or ei.class_name for ei in infos]
 
 
 def pixel(x, y):
@@ -82,26 +80,30 @@ def blue(c):
     return b > 200 and b - r > 90 and b - g > 50
 
 
-def import_model(path: str) -> str:
-    """Import `path` through Studio's 3D Importer; returns a summary, raises ImportFailed."""
+def import_model(path: str, window: str = "") -> str:
+    """Import `path` through the 3D Importer of the Studio window `window` picks; returns a
+    summary, raises StudioError (ImportFailed once it's started)."""
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         fail(f"no such file: {path}")
+    if os.path.splitext(path)[1].lower() not in EXTENSIONS:
+        fail(f"the 3D Importer takes {', '.join(sorted(EXTENSIONS))} files, not {path}")
     t0 = time.time()
 
-    mains = findwindows.find_windows(title_re=STUDIO_TITLE, backend="win32", visible_only=True)
-    if len(mains) != 1:
-        fail(f"expected exactly one Roblox Studio window, found {len(mains)}")
-    main_h = mains[0]
+    found = find()
+    target = pick(window, found)
+    main_h, pid = target.handle, target.pid
+    # Other places' main windows, should Studio ever put two in one process, aren't in the way.
+    mains = {w.handle for w in found if w.pid == pid}
     studio = uia(main_h)
-    pid = studio.process_id()
-    extra = titles(pid, {main_h})
+    extra = titles(pid, mains)
     if extra and set(extra) <= STRAY:  # close it and carry on
         from pywinauto.keyboard import send_keys
 
+        studio.set_focus()  # the Esc must go to this window, not whichever Studio has the focus
         send_keys("{ESC}")
         time.sleep(0.5)
-        extra = titles(pid, {main_h})
+        extra = titles(pid, mains)
     if extra:
         fail(f"Studio already has another window open (close it first): {extra}")
 
@@ -122,12 +124,12 @@ def import_model(path: str) -> str:
     child(dlg, automation_id=FILE_OPEN_ID).invoke()
 
     def preview_or_error():
-        hs = [h for h in windows(pid) if h != main_h]
+        hs = [h for h in windows(pid) if h not in mains]
         for h in hs:
             if uia(h).element_info.name == PREVIEW_TITLE:
                 return h
         if hs and dlg_h not in hs:  # dialog gone, something other than the importer came up
-            fail(f"Studio showed {titles(pid, {main_h})} instead of the Import Preview")
+            fail(f"Studio showed {titles(pid, mains)} instead of the Import Preview")
         return None
 
     prev_h = wait_for("the Import Preview window", 60, preview_or_error)
@@ -141,20 +143,22 @@ def import_model(path: str) -> str:
     prev.click_input(coords=(bx - r.left, by - r.top))
 
     def closed():
-        hs = [h for h in windows(pid) if h != main_h]
+        hs = [h for h in windows(pid) if h not in mains]
         if prev_h in hs:
             return False
         if hs:
-            fail(f"importer closed but Studio showed: {titles(pid, {main_h})}")
+            fail(f"importer closed but Studio showed: {titles(pid, mains)}")
         return True
 
     wait_for("the import to finish (Import Preview to close)", 180, closed)
-    return f"imported {path} in {time.time() - t0:.1f}s (import itself {time.time() - t_click:.1f}s)"
+    return (f"imported {path} into {target} in {time.time() - t0:.1f}s "
+            f"(import itself {time.time() - t_click:.1f}s)")
 
 
 if __name__ == "__main__":
+    if not 2 <= len(sys.argv) <= 3:
+        sys.exit("usage: python -m mcp_tools.studio_import <file> [window]")
     try:
-        print(import_model(sys.argv[1]))
-    except (ImportFailed, IndexError) as e:
-        print("import failed:", e or "usage: python -m mcp_tools.studio_import <file>", file=sys.stderr)
-        sys.exit(1)
+        print(import_model(*sys.argv[1:]))
+    except StudioError as e:
+        sys.exit(f"import failed: {e}")

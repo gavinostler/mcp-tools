@@ -1,19 +1,23 @@
 """mcp-tools: an MCP server (stdio) for working on a Roblox game from an AI assistant.
 
-Rojo: serve a project in a process that outlives the assistant's session, and build / install a
-Rojo plugin that auto-connects in Edit mode. Studio: import a model through Studio's own 3D
-Importer. Windows only. Working files (pid files, logs, the plugin build) go in
-%LOCALAPPDATA%\\mcp-tools.
+Rojo: serve a project in a process that outlives the assistant's session, read its log, and build /
+install a Rojo plugin that auto-connects in Edit mode. Studio: import a model through Studio's own
+3D Importer, read Studio's log, and take a screenshot of it. Windows only (the two log tools work
+anywhere). Working files (pid files, logs, the plugin build) go in %LOCALAPPDATA%\\mcp-tools.
 """
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+
+from . import logs
 
 HERE = Path(__file__).parent
 ROJO_PS1 = HERE / "rojo.ps1"
@@ -25,12 +29,25 @@ DEFAULT_PORT = 34872
 mcp = MCPServer("mcp-tools")
 
 
+def _need_windows():
+    if sys.platform != "win32":
+        raise ToolError("this tool needs Windows (only rojo_logs and studio_logs work elsewhere)")
+
+
+def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+    # CREATE_NO_WINDOW: a GUI client (Claude Desktop, ...) would otherwise flash a console window
+    return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+
+
 def _rojo(command: str, *args: str) -> tuple[int, str]:
-    run = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROJO_PS1), command,
-         "-StateDir", str(STATE), *args],
-        capture_output=True, text=True, timeout=900,
-    )
+    _need_windows()
+    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROJO_PS1), command,
+           "-StateDir", str(STATE), *args]
+    try:
+        run = _run(cmd, timeout=900)
+    except subprocess.TimeoutExpired:
+        raise ToolError(f"rojo.ps1 {command} didn't finish within 15 minutes") from None
     return run.returncode, (run.stdout + run.stderr).strip()
 
 
@@ -44,9 +61,8 @@ def _project(path: str) -> str:
 
 
 def _studio_running() -> bool:
-    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq RobloxStudioBeta.exe", "/NH"],
-                         capture_output=True, text=True).stdout
-    return "RobloxStudioBeta.exe" in out
+    return "RobloxStudioBeta.exe" in _run(
+        ["tasklist", "/FI", "IMAGENAME eq RobloxStudioBeta.exe", "/NH"], timeout=30).stdout
 
 
 @mcp.tool()
@@ -73,6 +89,18 @@ def rojo_stop(port: int = DEFAULT_PORT) -> str:
 
 
 @mcp.tool()
+def rojo_logs(port: int = DEFAULT_PORT, lines: int = 50) -> str:
+    """The last `lines` lines printed by the Rojo server rojo_start started on this port (the log
+    starts over with each rojo_start). Look here when changes stop syncing: Rojo reports files and
+    project changes it can't read (a bad .model.json, invalid JSON) here, not in Studio."""
+    log = STATE / f"serve-{port}.log"
+    if not log.is_file():
+        raise ToolError(f"no log at {log}: rojo_start hasn't served anything on port {port}")
+    got = logs.read_lines(log)[-max(lines, 1):]
+    return f"{log}:\n" + "\n".join(got) if got else f"{log} is empty"
+
+
+@mcp.tool()
 def rojo_build_plugin() -> str:
     """Build the auto-connect Rojo plugin: the installed Rojo CLI's own version (from GitHub) plus a
     patch that, in Edit mode with Auto Reconnect on, connects every few seconds to a server whose
@@ -90,6 +118,7 @@ def rojo_install_plugin(configure_settings: bool = True) -> str:
     Reconnect and sets Confirmation Behavior to "Unlisted PlaceId", so listed places connect
     without a click. Studio picks the plugin up when it next opens. The project needs
     "servePlaceIds": [<place id>] for auto-connect to happen."""
+    _need_windows()
     built = STATE / "out" / "Rojo.rbxm"
     if not built.is_file():
         raise ToolError("no plugin built yet: run rojo_build_plugin first")
@@ -101,8 +130,9 @@ def rojo_install_plugin(configure_settings: bool = True) -> str:
     target = plugins / "Rojo.rbxm"
     if target.is_file():
         backups.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(target, backups / f"Rojo-{stamp}.rbxm")
-        lines.append(f"backed up the old plugin to {backups / f'Rojo-{stamp}.rbxm'}")
+        backup = backups / f"Rojo-{stamp}.rbxm"
+        shutil.copy2(target, backup)
+        lines.append(f"backed up the old plugin to {backup}")
     shutil.copy2(built, target)
     lines.append(f"installed {target}")
     if not configure_settings:
@@ -114,8 +144,12 @@ def rojo_install_plugin(configure_settings: bool = True) -> str:
         return "\n".join(lines)
     changed = 0
     for settings in ROBLOX.glob("*/InstalledPlugins/0/settings.json"):
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        if not any(k.startswith("Rojo_") for k in data):
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as e:
+            lines.append(f"skipped {settings}: couldn't read it ({e})")
+            continue
+        if not isinstance(data, dict) or not any(k.startswith("Rojo_") for k in data):
             continue  # an account that's never run Rojo
         backups.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings, backups / f"settings-{settings.parents[2].name}-{stamp}.json")
@@ -123,26 +157,120 @@ def rojo_install_plugin(configure_settings: bool = True) -> str:
         data["Rojo_confirmationBehavior"] = "Unlisted PlaceId"
         settings.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         changed += 1
-    lines.append(f"turned on Auto Reconnect and \"Unlisted PlaceId\" for {changed} Studio account(s)"
-                 if changed else "no Studio account has Rojo settings yet: open Studio with the plugin once, "
-                 "then run this again with Studio closed (or set them in Rojo's settings)")
+    if changed:
+        lines.append(f"turned on Auto Reconnect and \"Unlisted PlaceId\" for {changed} Studio account(s)")
+    else:
+        lines.append("no Studio account has Rojo settings yet: open Studio with the plugin once, then "
+                     "run this again with Studio closed (or set them in Rojo's settings)")
     return "\n".join(lines)
 
 
-@mcp.tool()
-def studio_import(path: str) -> str:
-    """Import a model file (FBX, OBJ, GLB or GLTF) through Roblox Studio's own 3D Importer, as a
-    person would (File > Import, then Import), leaving the importer's settings as they are. Needs
-    exactly one Studio window, in Edit mode (not playtesting), visible on screen; it takes the
-    mouse and keyboard for about 15 s. Returning means the importer accepted the file: Studio's
-    Import Queue finishes it a few seconds later, so check the model arrived before using it.
-    Leave a few seconds between imports."""
-    from .studio_import import ImportFailed, import_model
+def _studio(fn, *args):
+    """Run a studio.* function, turning StudioError into a ToolError."""
+    from .studio import StudioError
 
     try:
-        return import_model(path)
-    except ImportFailed as e:
-        raise ToolError(f"import failed: {e}") from None
+        return fn(*args)
+    except StudioError as e:
+        raise ToolError(str(e)) from None
+
+
+@mcp.tool()
+def studio_windows() -> str:
+    """The open Roblox Studio windows, one per open place, with each one's pid and log file. The
+    other studio_* tools take a `window` naming one of these; it's needed when more than one is
+    open."""
+    _need_windows()
+    from .studio import find, log_for
+
+    found = find()
+    if not found:
+        return "Roblox Studio isn't open"
+    out = []
+    for w in found:
+        log = log_for(w.pid, ROBLOX / "logs")
+        out.append(f"{w.place!r}: pid {w.pid}, log {log.name if log else '(not found)'}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def studio_import(path: str, window: str = "") -> str:
+    """Import a model file (FBX, OBJ, GLB or GLTF) through Roblox Studio's own 3D Importer, as a
+    person would (File > Import, then Import), leaving the importer's settings as they are. The
+    Studio window must be in Edit mode (not playtesting) and visible on screen; it takes the mouse
+    and keyboard for about 15 s. Returning means the importer accepted the file: Studio's Import
+    Queue finishes it a few seconds later, so check the model arrived before using it. Leave a few
+    seconds between imports. Then check studio_logs for import errors.
+    `window`: which Studio window, if several are open: a place name, part of a title, or a pid
+    (see studio_windows)."""
+    _need_windows()
+    from .studio_import import import_model
+
+    return _studio(import_model, path, window)
+
+
+def _studio_log(window: str) -> tuple[Path, str]:
+    """The Studio log for `window`, and whose it is."""
+    logs_dir = ROBLOX / "logs"
+    newest = logs.newest_studio_log(logs_dir)
+    if sys.platform != "win32":
+        if window:
+            raise ToolError("picking a Studio window needs Windows")
+    else:
+        from .studio import find, log_for, pick
+
+        found = find()
+        if found or window:
+            target = _studio(pick, window, found)
+            log = log_for(target.pid, logs_dir)
+            if log:
+                return log, str(target)
+            if len(found) > 1 or newest is None:
+                raise ToolError(f"couldn't tell which log in {logs_dir} is {target}'s")
+            return newest, f"{target}, its newest log"
+    if newest is None:
+        raise ToolError(f"no Studio log in {logs_dir}")
+    return newest, "Studio isn't open: the newest log"
+
+
+@mcp.tool()
+def studio_logs(lines: int = 50, pattern: str = "", since_minutes: float = 0, window: str = "") -> str:
+    """The end of a Roblox Studio window's log (in %LOCALAPPDATA%\\Roblox\\logs): the Output
+    window's prints, warnings and errors plus Studio's own messages (3D importer, plugins, ...). It's
+    noisy, so narrow it down: `pattern` keeps lines matching a case-insensitive regex (e.g.
+    "error|warn|fail"), `since_minutes` keeps lines from the last that many minutes. Returns the
+    last `lines` lines left, times in UTC. After studio_import, check here for import errors. With
+    Studio closed, reads the newest log.
+    `window`: which Studio window, if several are open: a place name, part of a title, or a pid
+    (see studio_windows)."""
+    log, whose = _studio_log(window)
+    try:
+        rx = re.compile(pattern, re.IGNORECASE) if pattern else None
+    except re.error as e:
+        raise ToolError(f"bad pattern {pattern!r}: {e}") from None
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=since_minutes)
+             if since_minutes > 0 else None)
+    got = logs.studio_lines(log, rx, since)
+    shown = got[-max(lines, 1):]
+    written = datetime.datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    head = f"{log.name} ({whose}; last written {written} local time): {len(got)} matching lines"
+    head += f", the last {len(shown)} shown" if len(shown) < len(got) else ""
+    return head + ("\n" + "\n".join(shown) if shown else "")
+
+
+@mcp.tool()
+def studio_screenshot(window: str = "") -> list[str | Image]:
+    """A screenshot of a Roblox Studio window (the whole window: viewport, Explorer, Output, any
+    dialogs), to check what a change or import actually looks like. Works with Studio behind other
+    windows without taking the focus, unless the capture comes back blank: then it brings Studio to
+    the front.
+    `window`: which Studio window, if several are open: a place name, part of a title, or a pid
+    (see studio_windows)."""
+    _need_windows()
+    from .studio_screenshot import capture
+
+    target, jpeg = _studio(capture, window)
+    return [str(target), Image(data=jpeg, format="jpeg")]
 
 
 def main():
