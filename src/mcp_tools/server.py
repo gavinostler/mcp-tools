@@ -195,12 +195,13 @@ def studio_windows() -> str:
 
 @mcp.tool()
 def studio_import(path: str, window: str = "") -> str:
-    """Import a model file (FBX, OBJ, GLB or GLTF) through Roblox Studio's own 3D Importer, as a
-    person would (File > Import, then Import), leaving the importer's settings as they are. The
-    Studio window must be in Edit mode (not playtesting) and visible on screen; it takes the mouse
-    and keyboard for about 15 s. Returning means the importer accepted the file: Studio's Import
-    Queue finishes it a few seconds later, so check the model arrived before using it. Leave a few
-    seconds between imports. Then check studio_logs for import errors.
+    """Import a file through Roblox Studio's own importer, as a person would (File > Import, then
+    Import in the Import Preview if one comes up), leaving the importer's settings as they are:
+    meshes (FBX, OBJ, GLB, GLTF), images (BMP, GIF, JPEG, PNG, TGA), audio (OGG, MP3, FLAC, WAV) or
+    video (MP4, MOV). The Studio window must be in Edit mode (not playtesting) and visible on
+    screen; it takes the mouse and keyboard for about 15 s. Returning means the importer accepted
+    the file: Studio's Import Queue finishes it a few seconds later, so check it arrived before
+    using it, and check studio_logs for import errors. Leave a few seconds between imports.
     `window`: which Studio window, if several are open: a place name, part of a title, or a pid
     (see studio_windows)."""
     _need_windows()

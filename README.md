@@ -2,8 +2,8 @@
 
 An MCP server for working on a Roblox game from an AI assistant (Claude Code and other MCP
 clients), next to Roblox's own Studio MCP. It covers what that one can't: keeping Rojo running
-and connected without anyone clicking Connect, importing models through Studio's own 3D
-Importer, and letting the assistant check its work through Rojo's and Studio's logs and a
+and connected without anyone clicking Connect, importing models, images, sounds and video
+through Studio's own importer, and letting the assistant check its work through Rojo's and Studio's logs and a
 screenshot of Studio. Windows only.
 
 | Tool | What it does |
@@ -15,7 +15,7 @@ screenshot of Studio. Windows only.
 | `rojo_build_plugin()` | Builds a Rojo plugin that connects by itself in Edit mode (below), from the installed Rojo's own version. |
 | `rojo_install_plugin(configure_settings=True)` | Installs that plugin (backing up the old one) and, with Studio closed, turns on Rojo's Auto Reconnect and "Unlisted PlaceId" confirmation. |
 | `studio_windows()` | The open Studio windows (one per open place), with each one's pid and log file. |
-| `studio_import(path, window="")` | Imports an FBX / OBJ / GLB / GLTF through Studio's 3D Importer, as a person would. |
+| `studio_import(path, window="")` | Imports a mesh (FBX / OBJ / GLB / GLTF), image, sound or video through Studio's importer, as a person would. |
 | `studio_logs(lines=50, pattern="", since_minutes=0, window="")` | The end of a Studio window's log (Output window and Studio's own messages), filtered by a regex and/or age. |
 | `studio_screenshot(window="")` | A screenshot of a Studio window, returned as an image, even if it's behind other windows. |
 
@@ -72,13 +72,17 @@ Once: `rojo_build_plugin`, close Studio, `rojo_install_plugin`, then add your pl
 (If Studio was open during `rojo_install_plugin`, set Auto Reconnect on and Confirmation Behavior to
 "Unlisted PlaceId" in Rojo's settings yourself; Studio rewrites its settings when it closes.)
 
-## Studio 3D import
+## Studio import
 
 `studio_import` drives Studio's UI with Windows UI Automation: File > Import, the file dialog, then
 Import in the Import Preview, leaving your importer settings as they are (so "Upload to Roblox"
 etc. behave as when you import by hand). It takes the mouse and keyboard for about 15 seconds.
+It takes everything in the dialog's "All Supported Files": meshes (`.fbx .obj .gltf .glb`), images
+(`.bmp .gif .jpeg .jpg .png .tga`), audio (`.ogg .mp3 .flac .wav`) and video (`.mp4 .mov`). A mesh
+always gets the Import Preview; if another kind of file gets none within 15 seconds of the file
+dialog closing, the tool takes it that Studio sent it straight to its Import Queue and returns.
 Returning means the importer accepted the file; Studio's Import Queue finishes it a few seconds
-later, so check the model arrived (with the Studio MCP) before using it.
+later, so check it arrived (with the Studio MCP) and look at `studio_logs` before using it.
 
 Limits, because Studio draws the inside of the Import Preview itself (invisible to UI Automation):
 

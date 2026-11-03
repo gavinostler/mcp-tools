@@ -1,14 +1,17 @@
-"""Import an FBX/OBJ/GLB/GLTF through Roblox Studio's own 3D Importer, as a person would.
+"""Import a file through Roblox Studio's own importer (File > Import), as a person would: meshes
+(FBX/OBJ/GLB/GLTF), images, audio and video.
 
 import_model(path, window="") (the mcp-tools `studio_import` tool), or:
     python -m mcp_tools.studio_import <file> [window]
 Windows only. `window` picks the Studio window (see studio.pick; needed when several are open),
 which must be in Edit mode (not playtesting: the caller checks).
 
-Drives: File > Import -> Windows "Open 3D File" dialog -> "Import Preview" window -> Import.
-The importer's settings are left exactly as they are. Returning means the importer accepted the
-file; Studio's Import Queue finishes it a few seconds later, so confirm the model arrived (e.g.
-with the Roblox Studio MCP: workspace:WaitForChild(name, 30)).
+Drives: File > Import -> Windows file dialog -> "Import Preview" window -> Import. A mesh always
+gets the Import Preview; another kind of file may go straight from the file dialog to Studio's
+Import Queue, and then there's nothing more to click. The importer's settings are left exactly as
+they are. Returning means the importer accepted the file; the Import Queue finishes it a few
+seconds later, so confirm it arrived (e.g. with the Roblox Studio MCP: workspace:WaitForChild(name,
+30)) and check Studio's log for errors.
 """
 import ctypes
 import os
@@ -19,9 +22,15 @@ from pywinauto import findwindows
 
 from .studio import StudioError, find, pick, uia
 
-EXTENSIONS = {".fbx", ".obj", ".glb", ".gltf"}  # what the 3D Importer's file dialog accepts
+# The file dialog's "All Supported Files"
+MESHES = {".fbx", ".obj", ".gltf", ".glb"}
+MEDIA = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tga",  # images
+         ".ogg", ".mp3", ".flac", ".wav",  # audio
+         ".mp4", ".mov"}  # video
+EXTENSIONS = MESHES | MEDIA
+NO_PREVIEW_AFTER = 15  # s after the file dialog closes: a non-mesh file got no Import Preview
 IMPORT_ACTION_ID = "RBXMainWindow.meshImporterAction"  # File > "Import"
-FILE_DLG_CLASS = "#32770"  # titled "Open 3D File (FBX, OBJ, GLB, GLTF)"
+FILE_DLG_CLASS = "#32770"
 FILE_EDIT_ID, FILE_OPEN_ID = "1148", "1"  # standard Win32 file dialog ids
 PREVIEW_TITLE = "Import Preview"
 # The Import Preview contents are drawn by Roblox (a QEngineWidget), invisible to UI Automation.
@@ -81,13 +90,14 @@ def blue(c):
 
 
 def import_model(path: str, window: str = "") -> str:
-    """Import `path` through the 3D Importer of the Studio window `window` picks; returns a
-    summary, raises StudioError (ImportFailed once it's started)."""
+    """Import `path` through the importer of the Studio window `window` picks; returns a summary,
+    raises StudioError (ImportFailed once it's started)."""
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         fail(f"no such file: {path}")
-    if os.path.splitext(path)[1].lower() not in EXTENSIONS:
-        fail(f"the 3D Importer takes {', '.join(sorted(EXTENSIONS))} files, not {path}")
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in EXTENSIONS:
+        fail(f"Studio's importer takes {' '.join(sorted(EXTENSIONS))} files, not {path}")
     t0 = time.time()
 
     found = find()
@@ -116,23 +126,37 @@ def import_model(path: str, window: str = "") -> str:
     popup = wait_for("File menu", 5, lambda: file_menu.children())[0]
     child(popup, automation_id=IMPORT_ACTION_ID).invoke()
 
-    dlg_h = wait_for("the Open 3D File dialog", 15, lambda: findwindows.find_windows(
+    dlg_h = wait_for("the importer's file dialog", 15, lambda: findwindows.find_windows(
         process=pid, backend="win32", class_name=FILE_DLG_CLASS, visible_only=True))[0]
     dlg = uia(dlg_h)
     edit = child(child(dlg, automation_id=FILE_EDIT_ID, control_type="ComboBox"), control_type="Edit")
     edit.set_edit_text(path)
     child(dlg, automation_id=FILE_OPEN_ID).invoke()
 
+    no_preview = object()
+    dlg_closed = None
+
     def preview_or_error():
+        nonlocal dlg_closed
         hs = [h for h in windows(pid) if h not in mains]
         for h in hs:
             if uia(h).element_info.name == PREVIEW_TITLE:
                 return h
-        if hs and dlg_h not in hs:  # dialog gone, something other than the importer came up
-            fail(f"Studio showed {titles(pid, mains)} instead of the Import Preview")
+        if dlg_h in hs:
+            return None
+        if hs:  # dialog gone, something other than the importer came up
+            fail(f"Studio showed {titles(pid, mains)} instead of the Import Preview "
+                 "(see it with studio_screenshot)")
+        if ext in MEDIA:  # may have gone straight to the Import Queue
+            dlg_closed = dlg_closed or time.time()
+            if time.time() - dlg_closed > NO_PREVIEW_AFTER:
+                return no_preview
         return None
 
     prev_h = wait_for("the Import Preview window", 60, preview_or_error)
+    if prev_h is no_preview:
+        return (f"handed {path} to {target}'s importer in {time.time() - t0:.1f}s; Studio showed no "
+                "Import Preview for it, so its Import Queue takes it from here")
     prev = uia(prev_h)
     prev.set_focus()
     r = prev.rectangle()
