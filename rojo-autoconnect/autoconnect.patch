@@ -1,0 +1,72 @@
+diff --git a/plugin/src/App/init.lua b/plugin/src/App/init.lua
+index e6e4dee..9b4939d 100644
+--- a/plugin/src/App/init.lua
++++ b/plugin/src/App/init.lua
+@@ -154,6 +154,33 @@ function App:init()
+ 				self:checkSyncReminder()
+ 			end
+ 		end)
++
++		-- auto-connect patch: keep auto-connecting in Edit mode whenever a server that lists this place shows up
++		self.autoConnectThread = task.spawn(function()
++			while task.wait(5) do
++				if
++					Settings:get("autoReconnect")
++					and not self.autoConnectPaused
++					and self.serveSession == nil
++					and self:isSyncLockAvailable()
++				then
++					self:findActiveServer()
++						:andThen(function(serverInfo)
++							if
++								self.serveSession == nil
++								and not self.autoConnectPaused
++								and serverInfo.expectedPlaceIds
++								and table.find(serverInfo.expectedPlaceIds, game.PlaceId)
++							then
++								Log.info("Auto-connecting to '{}'", serverInfo.projectName)
++								self:startSession()
++							end
++						end)
++						:catch(function() end)
++						:await()
++				end
++			end
++		end)
+ 	end
+ 
+ 	if self:isAutoConnectPlaytestServerAvailable() then
+@@ -186,6 +213,9 @@ function App:willUnmount()
+ 	end
+ 
+ 	self:stopSyncReminderPolling()
++	if self.autoConnectThread then
++		task.cancel(self.autoConnectThread)
++	end
+ 
+ 	self.autoConnectPlaytestServerListener()
+ 	self:clearRunningConnectionInfo()
+@@ -601,6 +631,7 @@ function App:useRunningConnectionInfo()
+ end
+ 
+ function App:startSession()
++	self.autoConnectPaused = false
+ 	local claimedLock, priorOwner = self:claimSyncLock()
+ 	if not claimedLock then
+ 		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
+@@ -835,6 +866,7 @@ function App:endSession()
+ 	end
+ 
+ 	Log.trace("Disconnecting session")
++	self.autoConnectPaused = true
+ 
+ 	self.serveSession:stop()
+ 	self.serveSession = nil
+@@ -922,6 +954,7 @@ function App:render()
+ 						createPopup = not self.state.guiEnabled,
+ 
+ 						onAbort = function()
++							self.autoConnectPaused = true
+ 							self.confirmationBindable:Fire("Abort")
+ 						end,
+ 						onAccept = function()
