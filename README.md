@@ -12,6 +12,7 @@ screenshot of Studio. Windows only.
 | `rojo_status(project, port)` | Is a server for that project answering, and did `rojo_start` start it? |
 | `rojo_stop(port)` | Stops the server `rojo_start` started (never one it didn't start). |
 | `rojo_logs(port, lines=50)` | The end of that server's output: where Rojo reports files it can't sync. |
+| `rojo_sync_check(project, port)` | Is Studio running the scripts on disk? Returns Luau to run in Studio that lists every script whose source differs from its file (length and checksum), plus whether Rojo is up or crashed. |
 | `rojo_build_plugin()` | Builds a Rojo plugin that connects by itself in Edit mode (below), from the installed Rojo's own version. |
 | `rojo_install_plugin(configure_settings=True)` | Installs that plugin (backing up the old one) and, with Studio closed, turns on Rojo's Auto Reconnect and "Unlisted PlaceId" confirmation. |
 | `studio_windows()` | The open Studio windows (one per open place), with each one's pid and log file. |

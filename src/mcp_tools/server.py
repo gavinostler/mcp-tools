@@ -105,6 +105,28 @@ def rojo_logs(port: int = DEFAULT_PORT, lines: int = 50) -> str:
 
 
 @mcp.tool()
+def rojo_sync_check(project: str, port: int = DEFAULT_PORT) -> str:
+    """Is Studio running the scripts on disk? Rojo sometimes misses an edit or crashes, and a
+    playtest then runs old code. Returns whether the Rojo server is up, and Luau to run in Studio's
+    Edit DataModel (e.g. the Roblox Studio MCP's execute_luau): it checks every script in the
+    project against its file (length and checksum) and returns the ones that differ. One that
+    differs: make a real content change to its file (touching it isn't enough) or restart Rojo.
+    Playtests copy the Edit DataModel when they start, so restart play after a resync."""
+    from .sync import luau, scripts
+
+    project_file = _project(project)
+    head = [f"rojo: {rojo_status(project, port)}"]
+    log = STATE / f"serve-{port}.log"
+    if log.is_file() and any("crashed" in line for line in logs.read_lines(log)[-200:]):
+        head.append(f"rojo: its log ({log}) says it crashed: rojo_stop, then rojo_start")
+    entries = scripts(project_file)
+    if not entries:
+        raise ToolError(f"no scripts found in {project_file}")
+    head.append(f"Run this in Studio (Edit) to compare its {len(entries)} scripts with disk:")
+    return "\n".join(head) + "\n\n" + luau(entries)
+
+
+@mcp.tool()
 def rojo_build_plugin() -> str:
     """Build the auto-connect Rojo plugin: the installed Rojo CLI's own version (from GitHub) plus a
     patch that, in Edit mode with Auto Reconnect on, connects every few seconds to a server whose
