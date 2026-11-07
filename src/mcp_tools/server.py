@@ -2,7 +2,8 @@
 
 Rojo: serve a project in a process that outlives the assistant's session, read its log, and build /
 install a Rojo plugin that auto-connects in Edit mode. Studio: import a model through Studio's own
-3D Importer, read Studio's log, and take a screenshot of it. Windows only (the two log tools work
+3D Importer, read Studio's log, and take a screenshot of it. Files: serve local files to Studio over
+http and receive files from it. Windows only (the two log tools work
 anywhere). Working files (pid files, logs, the plugin build) go in %LOCALAPPDATA%\\mcp-tools.
 """
 import datetime
@@ -313,6 +314,34 @@ def studio_screenshot(window: str = "") -> list[str | Image]:
 
     target, jpeg = _studio(capture, window)
     return [str(target), Image(data=jpeg, format="jpeg")]
+
+
+@mcp.tool()
+def serve_files(paths: list[str], minutes: float = 10) -> str:
+    """Serve local files over http on 127.0.0.1 for `minutes`, for tools that take URLs rather than
+    paths (the Roblox Studio MCP's upload_image). Returns one URL per file, as JSON {path: url}.
+    The server lives in this process: nothing to start or stop."""
+    from . import files
+
+    try:
+        return json.dumps(files.serve(paths, minutes), indent=1)
+    except FileNotFoundError as e:
+        raise ToolError(str(e)) from None
+
+
+@mcp.tool()
+def receive_files(folder: str, minutes: float = 10) -> str:
+    """A URL that writes files into `folder` for `minutes`: an HTTP PUT to <url>/<relative path>
+    saves the body there (subfolders made as needed; .rbxm .rbxmx .txt .json .png only; nothing
+    outside the folder). Send the header "Content-Encoding: base64" with a base64 body (what a
+    Roblox Studio script can send most safely: HttpService and EncodingService:Base64Encode).
+    Studio's HttpService must be allowed to reach 127.0.0.1 (the Assistant's HTTP allowlist)."""
+    from . import files
+
+    try:
+        return files.receive(folder, minutes)
+    except NotADirectoryError as e:
+        raise ToolError(str(e)) from None
 
 
 def main():

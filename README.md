@@ -19,6 +19,8 @@ screenshot of Studio. Windows only.
 | `studio_import(paths, window="", allow_input=True)` | Imports meshes (FBX / OBJ / GLB / GLTF), images, sounds and video through Studio's importer, as a person would: files and/or whole folders, one after another. |
 | `studio_logs(lines=50, pattern="", since_minutes=0, window="")` | The end of a Studio window's log (Output window and Studio's own messages), filtered by a regex and/or age. |
 | `studio_screenshot(window="")` | A screenshot of a Studio window, returned as an image, even if it's behind other windows. |
+| `serve_files(paths, minutes=10)` | URLs for local files on 127.0.0.1, for tools that take URLs (the Roblox Studio MCP's `upload_image`). |
+| `receive_files(folder, minutes=10)` | A URL a Studio script can PUT files to (base64 bodies fine), written under `folder`: snapshots of place data, for example. Studio's HttpService needs 127.0.0.1 on the Assistant's HTTP allowlist. |
 
 Each Studio tool works on one Studio window. With several open (one per place), pass `window`: a place name, part of the window title, or a pid from
 `studio_windows`. With just one open it can be left out.
