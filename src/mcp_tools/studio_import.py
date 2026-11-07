@@ -11,7 +11,7 @@ through UI Automation, and Import is clicked by posting mouse messages to the Im
 Only if Studio ignores those does it use the real mouse / keyboard (unless allow_input=False).
 It still brings the Studio window to the front, as File > Import works on the active window.
 
-Drives: File > Import -> Windows file dialog -> "Import Preview" window -> Import. A mesh always
+Drives: File > Import (or Ctrl+M, where the menu item can't be found) -> Windows file dialog -> "Import Preview" window -> Import. A mesh always
 gets the Import Preview; another kind of file may go straight from the file dialog to Studio's
 Import Queue, and then there's nothing more to click. The importer's settings are left exactly as
 they are. Returning means the importer accepted the file; the Import Queue finishes it a few
@@ -37,7 +37,7 @@ EXTENSIONS = MESHES | MEDIA
 NO_PREVIEW_AFTER = 15  # s after the file dialog closes: a non-mesh file got no Import Preview
 IGNORED_AFTER = 5  # s after a background click on Import with nothing happening: Studio ignored it
 BETWEEN = 3  # s between imports, so the Import Queue keeps up
-IMPORT_ACTION_ID = "RBXMainWindow.meshImporterAction"  # File > "Import"
+IMPORT_ACTION_ID = "RBXMainWindow.meshImporterAction"  # File > "Import" (older Studio builds)
 FILE_DLG_CLASS = "#32770"
 FILE_EDIT_ID, FILE_OPEN_ID = "1148", "1"  # standard Win32 file dialog ids
 PREVIEW_TITLE = "Import Preview"
@@ -65,6 +65,32 @@ def child(el, **want):
         if all(getattr(ei, k) == v for k, v in want.items()):
             return c
     fail(f"control not found: {want} under {el.element_info.name!r}")
+
+
+def open_importer(studio, target, allow_input):
+    """File > Import. Newer Studio builds draw the File menu's actions without names or ids, so
+    there it presses Import's shortcut, Ctrl+M, on the window instead (the real keyboard)."""
+    activate(target)  # Import applies to the place in Studio's active window
+    # Walk children explicitly: a descendant search crawls the whole Explorer tree.
+    topbar = child(studio, automation_id="RBXMainWindow.studioTopBar")
+    menubar = child(topbar, control_type="MenuBar")
+    file_menu = child(menubar, name="File", control_type="MenuItem")
+    file_menu.expand()
+    popup = wait_for("File menu", 5, lambda: file_menu.children())[0]
+    for c in popup.children():
+        if c.element_info.automation_id == IMPORT_ACTION_ID:
+            c.invoke()
+            return
+    if not allow_input:
+        file_menu.collapse()
+        fail("this Studio's File menu has no Import item to click, and opening the importer with "
+             "Ctrl+M needs the real keyboard; allow input to import")
+    from pywinauto.keyboard import send_keys
+
+    send_keys("{ESC}")  # shut the menu: a key pressed while it's open goes to the menu
+    time.sleep(0.5)
+    activate(target)
+    send_keys("^m")
 
 
 def wait_for(what, timeout, fn):
@@ -198,14 +224,7 @@ def import_model(path: str, window: str = "", allow_input: bool = True) -> str:
     if extra:
         fail(f"Studio already has another window open (close it first): {extra}")
 
-    # File > Import. Walk children explicitly: a descendant search crawls the whole Explorer tree.
-    topbar = child(studio, automation_id="RBXMainWindow.studioTopBar")
-    menubar = child(topbar, control_type="MenuBar")
-    file_menu = child(menubar, name="File", control_type="MenuItem")
-    activate(target)  # File > Import applies to the place in Studio's active window
-    file_menu.expand()
-    popup = wait_for("File menu", 5, lambda: file_menu.children())[0]
-    child(popup, automation_id=IMPORT_ACTION_ID).invoke()
+    open_importer(studio, target, allow_input)
 
     dlg_h = wait_for("the importer's file dialog", 15, lambda: findwindows.find_windows(
         process=pid, backend="win32", class_name=FILE_DLG_CLASS, visible_only=True))[0]
