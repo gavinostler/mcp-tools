@@ -2,8 +2,8 @@
 
 An MCP server for working on a Roblox game from an AI assistant (Claude Code and other MCP
 clients), next to Roblox's own Studio MCP. It covers what that one can't: keeping Rojo running
-and connected without anyone clicking Connect, importing models, images, sounds and video
-through Studio's own importer, and letting the assistant check its work through Rojo's and Studio's logs and a
+and connected without anyone clicking Connect, uploading models, images, sounds and video as
+assets without touching Studio (or importing them through Studio's own importer), and letting the assistant check its work through Rojo's and Studio's logs and a
 screenshot of Studio. Windows only.
 
 | Tool | What it does |
@@ -16,6 +16,7 @@ screenshot of Studio. Windows only.
 | `rojo_build_plugin()` | Builds a Rojo plugin that connects by itself in Edit mode (below), from the installed Rojo's own version. |
 | `rojo_install_plugin(configure_settings=True)` | Installs that plugin (backing up the old one) and, with Studio closed, turns on Rojo's Auto Reconnect and "Unlisted PlaceId" confirmation. |
 | `studio_windows()` | The open Studio windows (one per open place), with each one's pid and log file. |
+| `upload_assets(paths, tos_check, creator="")` | After you confirm in a dialog, uploads models (FBX / GLB / GLTF / RBXM / OBJ), images, sounds and video as Roblox assets through Open Cloud, a few at a time, and returns their asset ids. No Studio window, focus or mouse. |
 | `studio_import(paths, window="", allow_input=True)` | Imports meshes (FBX / OBJ / GLB / GLTF), images, sounds and video through Studio's importer, as a person would: files and/or whole folders, one after another. |
 | `studio_logs(lines=50, pattern="", since_minutes=0, window="")` | The end of a Studio window's log (Output window and Studio's own messages), filtered by a regex and/or age. |
 | `studio_screenshot(window="")` | A screenshot of a Studio window, returned as an image, even if it's behind other windows. |
@@ -49,6 +50,16 @@ Other MCP clients (Claude Desktop, Cursor, ...):
 }
 ```
 
+For `upload_assets`, add an Open Cloud API key (create.roblox.com > Open Cloud > API Keys, with the
+Assets API's read and write permissions):
+
+```
+claude mcp add mcp-tools --scope user -e ROBLOX_API_KEY=<key> -- uvx --from git+https://github.com/gavinostler/mcp-tools mcp-tools
+```
+
+(or `"env": {"ROBLOX_API_KEY": "<key>"}` in the JSON above). Assets go to the key's owner;
+`ROBLOX_CREATOR` (a user id or `group:<id>`) or the tool's `creator` changes that.
+
 Working files (pid files, server logs, the plugin build) go in `%LOCALAPPDATA%\mcp-tools`.
 
 ## Rojo that stays up and connects by itself
@@ -73,6 +84,33 @@ Once: `rojo_build_plugin`, close Studio, `rojo_install_plugin`, then add your pl
 
 (If Studio was open during `rojo_install_plugin`, set Auto Reconnect on and Confirmation Behavior to
 "Unlisted PlaceId" in Rojo's settings yourself; Studio rewrites its settings when it closes.)
+
+## Uploading assets
+
+**Every upload is published to your account and moderated by Roblox, a model's textures
+included.** Text, links or watermarks in an image (even an artist's credit in a texture's corner)
+can get the account banned. Check every image before uploading.
+
+The assistant has to prove each upload doesn't break Roblox's Terms of Use: `tos_check` names
+every file and texture and says what was checked in it, and is refused if one is missing.
+Then a dialog shows the files, the textures and that check, and uploads only if you confirm.
+A client that can't show the dialog can't upload.
+
+`upload_assets` sends each file to Open Cloud's Assets API and waits for Roblox to process it, so
+nothing happens in Studio: put the results in a place with the Roblox Studio MCP's `insert_asset`.
+`paths` is a list of files and/or folders (every supported file directly inside). A folder with a
+mesh in it leaves out its images, since they're the mesh's textures. One failed upload doesn't
+stop the rest; each file gets its asset id or its error.
+
+- OBJ is converted to GLB (its MTL textures embedded), split into files under 20 MB, and comes
+  back with Luau that puts all of it in one Model.
+- 20 MB per file (video excepted). Audio counts against your monthly upload limit.
+- Models arrive as packages.
+- Images upload as Decals, and a Decal's id isn't an image id. In Studio,
+  `InsertService:LoadAsset(id):FindFirstChildWhichIsA("Decal", true).Texture` is the image id.
+
+It also works without the server: `python -m mcp_tools.assets <file or folder>... [--creator ID]`
+lists what it will upload and asks for `y` at the terminal.
 
 ## Studio import
 

@@ -2,8 +2,9 @@
 
 Rojo: serve a project in a process that outlives the assistant's session, read its log, and build /
 install a Rojo plugin that auto-connects in Edit mode. Studio: import a model through Studio's own
-3D Importer, read Studio's log, and take a screenshot of it. Files: serve local files to Studio over
-http and receive files from it. Windows only (the two log tools work
+3D Importer, read Studio's log, and take a screenshot of it. Assets: upload files through Open Cloud
+with no Studio involved. Files: serve local files to Studio over
+http and receive files from it. Windows only (the two log tools and upload_assets work
 anywhere). Working files (pid files, logs, the plugin build) go in %LOCALAPPDATA%\\mcp-tools.
 """
 import datetime
@@ -15,12 +16,15 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import anyio
 import anyio.from_thread
 import anyio.to_thread
-from mcp.server.mcpserver import Context, Image, MCPServer
+from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
+from mcp.server.mcpserver import Context, Elicit, Image, MCPServer, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel, Field
 
 from . import logs
 
@@ -31,7 +35,18 @@ STATE = LOCAL / "mcp-tools" / "rojo"
 ROBLOX = LOCAL / "Roblox"
 DEFAULT_PORT = 34872
 
-mcp = MCPServer("mcp-tools")
+mcp = MCPServer("mcp-tools", instructions="""upload_assets publishes to the user's Roblox account, and Roblox moderates every file, including
+the textures inside a model. One flagged image can get the account banned; this has happened.
+- Only call upload_assets when the user has asked to upload those specific files. Never to test
+  the tool, and never as a step of some other task.
+- Look at every image first, textures included, for text, links, logos and watermarks (artist
+  credits like "site.com" count as off-platform links). Tell the user what you find.
+- Before uploading, prove each file doesn't break Roblox's Terms of Use or Community Standards:
+  upload_assets' tos_check must name every file and texture and say what you checked in it.
+  If you can't prove it for a file, don't upload that file.
+- The user confirms each upload in a dialog, seeing your tos_check. If they decline, don't retry
+  or look for another way to upload. For a test or a preview, use studio_import into a local
+  place instead.""")
 
 
 def _need_windows():
@@ -250,6 +265,70 @@ async def studio_import(paths: list[str], ctx: Context, window: str = "", allow_
 
     return await anyio.to_thread.run_sync(
         functools.partial(_studio, import_many, paths, window, allow_input, on_file))
+
+
+class _Confirm(BaseModel):
+    upload: bool = Field(description="Upload these files")
+
+
+async def _ask_upload(paths: list[str], tos_check: str, creator: str = "") -> Elicit[_Confirm]:
+    """The dialog the user answers before upload_assets sends anything. Refused before it's shown
+    if tos_check doesn't name every file and texture."""
+    from .assets import UploadError, prepare, summary, unnamed
+
+    try:
+        plan = await anyio.to_thread.run_sync(prepare, paths, creator)
+        what = await anyio.to_thread.run_sync(summary, plan)
+        missing = await anyio.to_thread.run_sync(unnamed, plan, tos_check)
+    except UploadError as e:
+        raise ToolError(str(e)) from None
+    if missing:
+        raise ToolError("Not uploaded: tos_check must prove every file and texture doesn't break "
+                        "Roblox's Terms of Use or Community Standards. It doesn't cover: "
+                        + ", ".join(missing))
+    return Elicit(f"Upload to Roblox?\n\n{what}\n\nTerms of Use check:\n{tos_check.strip()}\n\n"
+                  "Roblox moderates every upload, textures included.", _Confirm)
+
+
+@mcp.tool()
+async def upload_assets(paths: list[str], tos_check: str, ctx: Context,
+                        confirm: Annotated[ElicitationResult[_Confirm], Resolve(_ask_upload)],
+                        creator: str = "") -> str:
+    """Upload files as Roblox assets through Open Cloud. This publishes to the user's account and
+    every file, textures included, goes through Roblox moderation: a flagged image can get the
+    account banned. Only call it when the user asked to upload these specific files.
+    `tos_check` must prove each upload doesn't break Roblox's Terms of Use or Community
+    Standards: name every file and every texture (by file name) and say what you checked in it.
+    Any text, links, URLs, logos, watermarks or contact info (an artist's "site.com" credit counts
+    as an off-platform link); real people, violence, gore, sexual content, drugs, hate symbols. Look at each
+    image yourself first. If you can't prove a file is fine, leave it out. It's refused if any
+    name is missing, and the user sees it in the confirmation dialog.
+    Models (FBX, GLB, GLTF, RBXM, OBJ converted to GLB), images (PNG, JPG, BMP, TGA), audio (MP3,
+    OGG, WAV, FLAC) and video (MP4, MOV), 20 MB each (video more). `paths`: files, and/or folders
+    to upload every such file directly inside (a folder with a mesh leaves out its images, the
+    mesh's textures). Returns JSON {path: {assetId, assetType, name, moderation} or {error}}. Then
+    put them in the place with the Roblox Studio MCP's insert_asset (assetId, assetType, assetName).
+    `creator`: a user id or "group:<id>"; default ROBLOX_CREATOR, else the API key's owner.
+    Needs ROBLOX_API_KEY: an Open Cloud key with the Assets API's read and write permissions."""
+    from .assets import UploadError, prepare, upload_many
+
+    if not isinstance(confirm, AcceptedElicitation) or not confirm.data.upload:
+        raise ToolError("Not uploaded: the user declined. Don't retry or upload another way.")
+    try:
+        plan = await anyio.to_thread.run_sync(prepare, paths, creator)
+    except UploadError as e:
+        raise ToolError(str(e)) from None
+
+    def on_done(i, n, f):
+        try:  # progress is a nicety: never let it stop an upload
+            anyio.from_thread.run(ctx.report_progress, i, n, f"uploaded {os.path.basename(f)}")
+        except Exception:
+            pass
+
+    out = await anyio.to_thread.run_sync(upload_many, plan, on_done)
+    if all("error" in r for r in out.values()):
+        raise ToolError(json.dumps(out, indent=1))
+    return json.dumps(out, indent=1)
 
 
 def _studio_log(window: str) -> tuple[Path, str]:

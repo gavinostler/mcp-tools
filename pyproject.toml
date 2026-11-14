@@ -1,7 +1,7 @@
 [project]
 name = "mcp-tools"
-version = "0.4.0"
-description = "MCP server for AI-assisted Roblox development on Windows: Rojo that stays up and auto-connects, Studio import (meshes, images, audio, video), and Rojo / Studio logs and Studio screenshots"
+version = "0.5.0"
+description = "MCP server for AI-assisted Roblox development on Windows: Rojo that stays up and auto-connects, asset uploads through Open Cloud, Studio import (meshes, images, audio, video), and Rojo / Studio logs and Studio screenshots"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

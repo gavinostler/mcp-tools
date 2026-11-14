@@ -26,6 +26,7 @@ import time
 
 from pywinauto import findwindows
 
+from . import assets
 from .studio import StudioError, StudioWindow, activate, close, find, owner, pick, post_click, uia
 
 # The file dialog's "All Supported Files"
@@ -143,29 +144,14 @@ def check_file(path: str) -> str:
     return path
 
 
-def expand(paths: list[str]) -> list[str]:
-    """Files to import: each path that's a file, and every importable file directly in each
-    folder, in order and once each. Raises ImportFailed for a missing or unimportable file."""
-    files = []
-    for p in paths:
-        full = os.path.abspath(os.path.expanduser(p))
-        if os.path.isdir(full):
-            files += sorted(os.path.join(full, f) for f in os.listdir(full)
-                            if os.path.splitext(f)[1].lower() in EXTENSIONS
-                            and os.path.isfile(os.path.join(full, f)))
-        else:
-            files.append(check_file(full))
-    files = list(dict.fromkeys(files))
-    if not files:
-        fail(f"nothing to import in {paths}")
-    return files
-
-
 def import_many(paths: list[str], window: str = "", allow_input: bool = True, on_file=None) -> str:
-    """Import every file `paths` names (see expand) into the Studio window `window` picks, one at
+    """Import every file `paths` names (see assets.expand) into the Studio window `window` picks, one at
     a time, stopping at the first failure. on_file(index, count, path) is called before each.
     Returns a line per file; raises StudioError, saying what got imported before it."""
-    files = expand(paths)  # all checked before Studio is touched
+    try:  # all checked before Studio is touched
+        files = assets.expand(paths, EXTENSIONS)
+    except ValueError as e:
+        fail(str(e))
     done = []
     for i, f in enumerate(files):
         if on_file:
