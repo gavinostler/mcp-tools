@@ -15,6 +15,7 @@ import base64
 import http.server
 import os
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -71,13 +72,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
 
 
+class _Server(http.server.ThreadingHTTPServer):
+    # Every MCP session runs its own copy of this server. With address reuse (the http.server
+    # default) Windows lets a second process bind the same port as the first, and requests then
+    # go to whichever it picks: the other's tokens 404. Bind it exclusively, so a second copy
+    # falls back to a free port of its own.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def _ensure() -> int:
     global _server
     with _lock:
         if _server is None:
             for port in (PORT, 0):
                 try:
-                    _server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+                    _server = _Server(("127.0.0.1", port), _Handler)
                     break
                 except OSError:
                     continue
